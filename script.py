@@ -21,25 +21,199 @@ http://exac.hms.harvard.edu/).
 6. Any additional annotations that you feel might be relevant.
 
 """
+class Variant:
+    def __init__(self, vcfLine):
+        """
+        """
+        chr, pos, id, ref, alt, qual, filter, info, format, normal, va5 = vcfLine.split('\t')
+        
+        self.chr = chr
+        self.pos = pos
+        self.id = id
+        self.ref = ref
+        self.alt = alt
+        self.qual = qual
+        
+        # Parse INFO field to get variant type, depth, 
+        infoDict = dict()
+        for x in info.split(';'):
+            key,value = x.split('=')
+            infoDict[key] = value
 
-def parseVariant():
-    """
-    """
-    return
+        self.type = infoDict['TYPE']  # type of variant
+        self.depth = infoDict['DP']  # sequencing depth
+        self.varTotalReads = infoDict['AO']  # number of reads supporting the variant
+        self.refTotalReads = int(infoDict['RO'])  # number of reads supporting the reference
 
-def requestVEP(server, request):
-    """
-    Uses the Ensembl VEP REST API to find the variant effect. Based on the code from this webinar:
-    https://drive.google.com/file/d/1jm8DJOqHxiZCLL0gkMnuyhU3ulLzOUuD/view
+        # Initializes the percentage ratio 
+        self.percentRatio = self.getPercentageVarVsRef()
+        
+        # Updated with variant effect after vep POST request is made
+        self.effect = ""
+
+        # 
+        self.alleleFreq = ""
+
+    def printVariant(self, output):
+        """
+        """
+        #print("\t".join([self.chr, self.pos, self.id, self.ref, self.alt, self.type, self.depth, self.effect]))
+        output.write("\t".join([self.chr, self.pos, self.id, self.ref, self.alt, self.type, 
+                                self.effect, self.depth, self.varTotalReads, self.percentRatio]))
+        output.write("\n")
     
+    def getPercentageVarVsRef(self):
+        """
+        """
+        if ',' in self.varTotalReads:  # more than one alternate allele
+            ratios = []
+            for val in self.varTotalReads.split(','):
+                varPercent = int(val) / (int(val) + self.refTotalReads)
+                refPercent = self.refTotalReads / (int(val) + self.refTotalReads)
+                ratios.append("{:.3f}:{:.3f}".format(varPercent, refPercent))
+                percentRatio =",".join(ratios)
+        else:
+            varPercent = int(self.varTotalReads) / (int(self.varTotalReads) + self.refTotalReads)
+            refPercent = self.refTotalReads / (int(self.varTotalReads) + self.refTotalReads)
+            percentRatio = "{:.3f}:{:.3f}".format(varPercent, refPercent)
+        
+        return percentRatio
+    
+    def vepFormat(self):
+        """
+        """
+        return "\t".join([self.chr, self.pos, self.id, self.ref, self.alt])
+
+    def updateEffect(self, effect):
+        """
+        """
+        self.effect = effect 
+
+    def updateAlleleFreq(self, af):
+        """
+        """
+        self.alleleFreq = af
+    
+    def exacFormat(self):
+        """
+        """
+        return "-".join([self.chr, self.pos, self.ref, self.alt])
+
+def vepPOSTRequest(variantInput):
     """
-    myRequest = requests.get(server+request, headers={"Content-Type" : "application/json"})
+    """
+    # Reformat variants in list to acceptable vep format
+    vepInput = [var.vepFormat() for var in variantInput]
+
+    # Convert list into json format
+    variantJsonInput = json.dumps({"variants" : vepInput})
+
+    # Make POST request
+    server = "http://grch37.rest.ensembl.org/"
+    request = "vep/homo_sapiens/region/"
+    headers = {"Content-Type" : "application/json", "Accept" : "application/json"}
+    myRequest = requests.post(server+request, headers=headers, data = variantJsonInput)
 
     if not myRequest.ok:
         myRequest.raise_for_status()
         sys.exit()
     
-    return myRequest.json()
+    jsonResult = myRequest.json()
+
+    for i in range(len(variantInput)):
+        effect = jsonResult[i]['most_severe_consequence']
+        variantInput[i].updateEffect(effect)
+        #variantInput[i] = variantInput[i] + "   {}".format(effect)
+        #outputFile.write(variantInput[i])
+        #outputFile.write("\n")
+    return variantInput
+    
+def exacPOSTRequest(variantInput):
+    """
+    """
+    # Reformat variants according to ExAC format requirements
+    formattedInput = [var.exacFormat() for var in variantInput]
+
+    # Specify url and headers
+    reqUrl = "http://exac.hms.harvard.edu/rest/bulk/variant"
+    head = {"Content-Type": "application/json", "Accept":"application/json"}
+
+    # Make request, use json.dumps() on formatted input
+    myReq = requests.post(url=reqUrl, data= json.dumps(formattedInput), headers=head)
+
+    if not myReq.ok: 
+        print(myReq.raise_for_status)
+        sys.exit()
+    else:  # request successful
+        result = myReq.json()
+        
+        # Iterate through Variant objects
+        for i in range(len(variantInput)):  
+            variant = variantInput[i]
+            varExacFormat = formattedInput[i]
+            try:  # allele frequency is available through ExAC
+                varAF = "{:.4}".format(float(result[varExacFormat]["variant"]["allele_freq"]))
+            except:
+                varAF = "."
+            variant.updateAlleleFreq(varAF)
+
+def main():
+    f = open('Challenge_data_(1).vcf', 'r')
+    output = open('results.tsv', 'w')
+
+    # Write output header
+    output.write("\t".join(["#CHROM", "POS", "ID", "REF", "ALT", "TYPE", "DEPTH", "SUPPORT", "VAR:REF READS", "EFFECT"]))
+    output.write("\n")
+
+    # Keep track of variants for each post request
+    variantList = []
+
+    # Get number of lines
+    numLines = len([line.strip("\n") for line in f if line != "\n"])
+    #print("Number of lines = ", numLines)
+    f.seek(0)
+
+    # Keep track of line count and post requests
+    lineCount = 0
+    numPostRequest = 0
+    
+    # Iterate through lines of file
+    for line in f.readlines():
+        if line.startswith("#"):
+            lineCount += 1
+            continue
+        else:
+            lineCount += 1
+
+            # Create new Variant object
+            newVariant = Variant(line)
+
+            # Add new variant to the current list of variants
+            variantList.append(newVariant)
+
+            # Make POST requests for VEP (variant effect) and Exac (allele frequency)
+            if len(variantList) == 200 or lineCount == numLines:
+                
+                # make POST request to VEP with current 200 variants
+                variantList = vepPOSTRequest(variantList)
+
+                # make POST request to ExAC with current 200 variants
+                exacPOSTRequest(variantList)
+
+                for var in variantList:
+                    var.printVariant(output)
+                    #output.write(var)
+                    #output.write("\n")
+
+                variantList = []  # reset list
+            
+    #print("Number of post requests : ", numPostRequest)
+    #print("Number of lines encountered : ", lineCount)
+    f.close()
+
+if __name__ == "__main__":
+    main()
+
 
 def fetchVariantEffect(chr, startPos, endPos, ref, allele, type):
     """
@@ -78,8 +252,7 @@ def fetchVariantEffect(chr, startPos, endPos, ref, allele, type):
     request = "/vep/"+species+"/region/"+chr+":"+str(startPos)+"-"+str(endPos)+":/"+allele+"?"
     server = "http://grch37.rest.ensembl.org/"
     #contentType = "content-type=application/json"
-    print(server+request)
-    # Save the returned JSON
+    #print(server+request)
 
     # 3. Make request to VEP API
     requestJSON = requestVEP(server, request)
@@ -88,83 +261,3 @@ def fetchVariantEffect(chr, startPos, endPos, ref, allele, type):
     mostSevereEffect = requestJSON[0]['most_severe_consequence']
 
     return mostSevereEffect
-    
-def getStartPos(pos, allele, mut):
-    """
-    """
-    if mut == 'ins':
-        startCoord = str(int(pos) + len(allele))
-    elif mut == 'del':
-        startCoord = pos
-
-    return startCoord
-    
-def main():
-    f = open('Challenge_data_(1).vcf', 'r')
-    print("\t".join(["#CHROM", "POS", "ID", "REF", "ALT", "TYPE", "DEPTH", "EFFECT"]))
-    for line in f.readlines():
-        if line.startswith("#"):
-            continue
-        else:
-            chr, pos, id, ref, alt, qual, filter, info, format, normal, va5 = line.split('\t')
-            
-            # Parse INFO field
-            infoDict = dict()
-            for x in info.split(';'):
-                key,value = x.split('=')
-                infoDict[key] = value
-
-            # Find type of variant
-            type = infoDict['TYPE']
-
-            if type == "snp":
-                continue
-            
-            # Find sequencing depth
-            depth = infoDict['DP']
-
-            # Check if there are multiple variant alleles
-            if "," in alt:
-                altAlleles = alt.split(',')
-                altAlleleTypes = type.split(',')
-                alleleEffects = []
-                
-                # grab consequences for all variant alelles
-                for i in range(len(altAlleles)):
-                    allele = altAlleles[i]
-                    
-                    '''
-                    # Check if allele is ins or del
-                    if altAlleleTypes[i] == 'ins':
-                        # If insertion, startCoord = endCoord + 1
-                        # endCoord =
-                        # FROM VCF4.1 documentation:
-                        # "For precise variants, END is POS + length of REF allele - 1, and the for imprecise variants the corresponding best
-                        # estimate."
-                        # Check if variant is precise
-                        startCoord = str(int(pos) + len(allele))
-
-                    #elif altAlleleTypes[i] == 'del':
-                    else:
-                        startCoord = pos
-                    '''
-
-                    #print(line, startCoord)
-                    #lenDiff = len(allele) - len(ref)
-                    effect = fetchVariantEffect(chr, pos, -1, ref, allele, type)
-                    alleleEffects.append(effect)
-
-                print(alleleEffects)
-                sys.exit()
-            
-            # Find effect of variant
-            
-            effect = fetchVariantEffect(chr, pos, -1, ref, alt, type)
-
-            # Write variant and associated information
-            print(chr, pos, id, ref, alt, type, depth, effect)
-            
-    f.close()
-
-if __name__ == "__main__":
-    main()
