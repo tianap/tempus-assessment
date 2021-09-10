@@ -48,11 +48,47 @@ class CommandLine():
         self.args = self.parser.parse_args()
 
 class Variant:
+    """
+    Object that stores associated variant information directly from the input VCF file, 
+    (i.e. chromosome, position, ref/alt allele) and information retrieved from external 
+    sources (i.e. variant effect, allele frequency).
+
+    Attributes:
+        - chr : (str) chromosome in which variant is found
+        - pos : (str) chromosomal position of variant
+        - id : (str) variant ID from VCF
+        - ref : (str) reference allele 
+        - alt : (str) variant allele
+        - qual : (str) quality of observed variant form VCF
+        - type : (str) type of variant
+        - depth : (str) read depth of variant
+        - varTotalReads : (str) number of reads supporting the variant
+        - refTotalReads : (str) number of reads supporting the reference allele
+        - percentRatio : (str) percentage of reads supporting variant vs readss upporting ref
+        - effect : (str) most severe consequence of variant, retrieved from Ensembl VEP
+        - aleleFreq : (str) allele frequency of variant, retrieved from ExAC
+
+    Methods:
+        - printVariant(output) : writes formatted variant info to provided output file
+        - getPercentageVarVsRef() : calculates ratio of percentages of reads supporting variant 
+            vs ref
+        - vepFormat() : returns variant info formatted for VEP POST request
+        - updateEffect(effect) : updates 'effect' attribute
+        - exacFormat() : returns variant info formatted for ExAC POST request
+        - updateAlleleFreq(af) : updates 'alleleFreq' attribute
+
+    """
     def __init__(self, vcfLine):
         """
+        Class Variant constructor. 
+
+        Parameter(s):
+            - vcfLine : (str) line from VCF file
         """
+        # Retrieve fields from VCF line
         chr, pos, id, ref, alt, qual, filter, info, format, normal, va5 = vcfLine.split('\t')
         
+        # Assign basic variant information
         self.chr = chr
         self.pos = pos
         self.id = id
@@ -60,7 +96,7 @@ class Variant:
         self.alt = alt
         self.qual = qual
         
-        # Parse INFO field to get variant type, depth, 
+        # Parse INFO field to get variant type, depth, number of reads supporting variant and ref
         infoDict = dict()
         for x in info.split(';'):
             key,value = x.split('=')
@@ -77,19 +113,29 @@ class Variant:
         # Updated with variant effect after vep POST request is made
         self.effect = ""
 
-        # 
+        # Updated with allele frequency after ExAC POST request is made
         self.alleleFreq = ""
 
     def printVariant(self, output):
         """
+        Writes variant information to output file.
+
+        Parameter(s):
+            - output : (str) output file
+
         """
-        #print("\t".join([self.chr, self.pos, self.id, self.ref, self.alt, self.type, self.depth, self.effect]))
         output.write("\t".join([self.chr, self.pos, self.id, self.ref, self.alt, self.type, 
-                                self.effect, self.depth, self.varTotalReads, self.percentRatio, self.alleleFreq]))
+                                self.effect, self.depth, self.varTotalReads, self.percentRatio, 
+                                self.alleleFreq]))
         output.write("\n")
     
     def getPercentageVarVsRef(self):
         """
+        Calculates the percentage of reads supporting variant versus reads supporting ref allele.
+        If more than one allele, calculates percent ratios for each pair of variant versus ref.
+
+        Returns:
+            - percentRatio : (str) string format (var %:ref %) of calculated ratio
         """
         if ',' in self.varTotalReads:  # more than one alternate allele
             ratios = []
@@ -107,27 +153,52 @@ class Variant:
     
     def vepFormat(self):
         """
+        Returns the format of variant information required for VEP POST request.  Called on
+        by global method vepPOSTRequest().
         """
         return "\t".join([self.chr, self.pos, self.id, self.ref, self.alt])
 
     def updateEffect(self, effect):
         """
+        Updates the attribute 'effect' with the given consequence. Called on by global method 
+        vepPOSTRequest().
+
+        Parameter(s):
+            - effect : (str) variant consequence retrieved from VEP
         """
         self.effect = effect 
-
-    def updateAlleleFreq(self, af):
-        """
-        """
-        self.alleleFreq = af
     
     def exacFormat(self):
         """
+        Returns the format of variant information required for ExAC POST request.  Called on
+        by global method exacPOSTRequest().
         """
         return "-".join([self.chr, self.pos, self.ref, self.alt])
 
+    def updateAlleleFreq(self, af):
+        """
+        Updates the attribute 'effect' with the given allele frequency. Called on by global method 
+        exacPOSTRequest().
+
+        Parameter(s):
+            - af : (str) allele frequency retrieved from ExAC
+        """
+        self.alleleFreq = af
+
 def vepPOSTRequest(variantInput):
     """
+    Makes POST request to Ensembl Variant Effect Predictor (VEP) tool 200 variants at a time.
+    Retrieves each variant's most severe consequence and updates the 'effect' attribute of the
+    corresponding Variant object. Calls on Variant methods vepFormat() and updateEffect(). Utilizes
+    requests and json libraries.
+
+    NOTE: The default human assembly is GRCh37/hg19 and uses this version of VEP.
+
+    Parameter(s):
+        - variantInput : (list) list of 200 Variant objects
+    
     """
+
     # Reformat variants in list to acceptable vep format
     vepInput = [var.vepFormat() for var in variantInput]
 
@@ -149,14 +220,21 @@ def vepPOSTRequest(variantInput):
     for i in range(len(variantInput)):
         effect = jsonResult[i]['most_severe_consequence']
         variantInput[i].updateEffect(effect)
-        #variantInput[i] = variantInput[i] + "   {}".format(effect)
-        #outputFile.write(variantInput[i])
-        #outputFile.write("\n")
-    return variantInput
-    
+     
 def exacPOSTRequest(variantInput):
     """
+    Makes POST request to ExAC search API 200 variants at a time. Retrieves each variant's allele 
+    frequency and updates the 'alleleFreq' attribute of the corresponding Variant object. Calls on
+    Variant methods vepFormat() and updateEffect(). Utilizes requests and json libraries.
+    
+    Parameter(s):
+        - variantInput : (list) list of 200 Variant objects
+
+    Returns:
+        - variantInput : (list) updated list of Variant objects with new 'alleleFreq' attributes
+    
     """
+
     # Reformat variants according to ExAC format requirements
     formattedInput = [var.exacFormat() for var in variantInput]
 
@@ -179,7 +257,7 @@ def exacPOSTRequest(variantInput):
             varExacFormat = formattedInput[i]
             try:  # allele frequency is available through ExAC
                 varAF = "{:.4}".format(float(result[varExacFormat]["variant"]["allele_freq"]))
-            except:
+            except:  # if no allele frequency provided, use '.'
                 varAF = "."
             variant.updateAlleleFreq(varAF)
 
@@ -189,15 +267,17 @@ def main():
     annotate variants and write the results to the provided output file. Each variant is made into a 
     Variant object (refer to documentation above) and stores all information pertaining to that 
     variant.
+    
     """
+    # Create CommandLine object (used for parsing arguments)
     newCommandLine = CommandLine()
 
     f = open(newCommandLine.args.i, 'r')
     output = open(newCommandLine.args.o, 'w')
 
     # Write output header
-    output.write("\t".join(["#CHROM", "POS", "ID", "REF", "ALT", "TYPE", "DEPTH", "SUPPORT", 
-                            "VAR:REF READS", "EFFECT", "ALLELE FREQ"]))
+    output.write("\t".join(["#CHROM", "POS", "ID", "REF", "ALT", "TYPE", "EFFECT", "DEPTH", 
+                            "SUPPORT", "VAR:REF READS", "ALLELE FREQ"]))
     output.write("\n")
 
     # Keep track of variants for each post request
@@ -230,7 +310,7 @@ def main():
             if len(variantList) == 200 or lineCount == numLines:
                 
                 # make POST request to VEP with current 200 variants
-                variantList = vepPOSTRequest(variantList)
+                vepPOSTRequest(variantList)
 
                 # make POST request to ExAC with current 200 variants
                 exacPOSTRequest(variantList)
