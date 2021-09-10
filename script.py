@@ -1,4 +1,4 @@
-import requests, sys, json
+import requests, sys, json, argparse
 
 """
 Each variant must be annotated with the following pieces of information:
@@ -21,6 +21,32 @@ http://exac.hms.harvard.edu/).
 6. Any additional annotations that you feel might be relevant.
 
 """
+
+class CommandLine():
+    """
+    Handles the command line, usage, and help requests.
+    """
+    def __init__(self):
+        """
+        CommandLine constructor. Uses parser to interpret command line using argparse.
+
+        Required arguments:
+            --inputFile : ()
+            --outputFile : ()
+        """
+
+        self.parser = argparse.ArgumentParser(
+            description = "Annotates variants from given VCF file.",
+            add_help=True,
+            prefix_chars="-",
+            usage="py script.py -i input.vcf -o output.tsv"
+        )
+
+        self.parser.add_argument('-i', metavar="--inputFile", help="input VCF file", required=True)
+        self.parser.add_argument('-o', metavar="--outputFile", help="output TSV file", required=True)
+    
+        self.args = self.parser.parse_args()
+
 class Variant:
     def __init__(self, vcfLine):
         """
@@ -59,7 +85,7 @@ class Variant:
         """
         #print("\t".join([self.chr, self.pos, self.id, self.ref, self.alt, self.type, self.depth, self.effect]))
         output.write("\t".join([self.chr, self.pos, self.id, self.ref, self.alt, self.type, 
-                                self.effect, self.depth, self.varTotalReads, self.percentRatio]))
+                                self.effect, self.depth, self.varTotalReads, self.percentRatio, self.alleleFreq]))
         output.write("\n")
     
     def getPercentageVarVsRef(self):
@@ -158,11 +184,20 @@ def exacPOSTRequest(variantInput):
             variant.updateAlleleFreq(varAF)
 
 def main():
-    f = open('Challenge_data_(1).vcf', 'r')
-    output = open('results.tsv', 'w')
+    """
+    The main() function reads through the provided .vcf file, calls on a variety of functions to 
+    annotate variants and write the results to the provided output file. Each variant is made into a 
+    Variant object (refer to documentation above) and stores all information pertaining to that 
+    variant.
+    """
+    newCommandLine = CommandLine()
+
+    f = open(newCommandLine.args.i, 'r')
+    output = open(newCommandLine.args.o, 'w')
 
     # Write output header
-    output.write("\t".join(["#CHROM", "POS", "ID", "REF", "ALT", "TYPE", "DEPTH", "SUPPORT", "VAR:REF READS", "EFFECT"]))
+    output.write("\t".join(["#CHROM", "POS", "ID", "REF", "ALT", "TYPE", "DEPTH", "SUPPORT", 
+                            "VAR:REF READS", "EFFECT", "ALLELE FREQ"]))
     output.write("\n")
 
     # Keep track of variants for each post request
@@ -170,12 +205,12 @@ def main():
 
     # Get number of lines
     numLines = len([line.strip("\n") for line in f if line != "\n"])
-    #print("Number of lines = ", numLines)
+    
+    # Reset readlines to first line
     f.seek(0)
 
     # Keep track of line count and post requests
     lineCount = 0
-    numPostRequest = 0
     
     # Iterate through lines of file
     for line in f.readlines():
@@ -202,62 +237,12 @@ def main():
 
                 for var in variantList:
                     var.printVariant(output)
-                    #output.write(var)
-                    #output.write("\n")
 
                 variantList = []  # reset list
             
-    #print("Number of post requests : ", numPostRequest)
-    #print("Number of lines encountered : ", lineCount)
+    # Close files
     f.close()
+    output.close()
 
 if __name__ == "__main__":
     main()
-
-
-def fetchVariantEffect(chr, startPos, endPos, ref, allele, type):
-    """
-    calls on requestVEP 
-    GET vep/:species/region/:region/:allele/
-    ignore strand
-    """
-    # 1. Get chromosomal positions
-
-    # NOTE: chromosomal positions required for VEP input depend on the type of variant.
-    # In particular, the insertion coordinates from the VEP grch37 documentation:
-    # The following conditional statements determine whether an end position has been included in
-    # the original file. If not, end positions are calculated according to the type of variant.
-
-    if endPos == -1:  # no end position given in the origianl VCF file
-        # From the VCF 4.1 documentation:
-        # "For precise variants, END is POS + length of REF allele - 1, and for imprecise 
-        # variants the corresponding best estimate.
-        # NOTE: In the event of a imprecise variant, the END position calculation is the best 
-        # estimate.
-
-        if type == "snp":
-            endPos = startPos
-        else:  # either deletion, insertion, or complex
-            endPos = int(startPos) + len(ref) - 1
-            
-            # Check if insertion or deletion
-            if type == "ins":
-                # From VEP documentation:
-                # "An insertion (of any size) is indicated by start coordinate = end coordinate + 1"
-
-                startPos = endPos + 1  # reset start position, cast as string
-
-    # 2. Parameters for VEP API request
-    species = "human"
-    request = "/vep/"+species+"/region/"+chr+":"+str(startPos)+"-"+str(endPos)+":/"+allele+"?"
-    server = "http://grch37.rest.ensembl.org/"
-    #contentType = "content-type=application/json"
-    #print(server+request)
-
-    # 3. Make request to VEP API
-    requestJSON = requestVEP(server, request)
-
-    # 4. Grab most sever consequence from JSON and return
-    mostSevereEffect = requestJSON[0]['most_severe_consequence']
-
-    return mostSevereEffect
